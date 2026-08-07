@@ -12,7 +12,7 @@ class StockWatchApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '股票看盘',
+      title: '涨了吗',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,

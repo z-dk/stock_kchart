@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:k_chart/chart_translations.dart';
 import 'package:k_chart/flutter_k_chart.dart';
 
+import '../data_sources/data_source.dart';
+import '../data_sources/data_source_factory.dart';
 import '../models/stock_quote.dart';
-import '../services/sina_api_service.dart';
+import 'settings_page.dart';
 
 /// A selectable K-line period. [scale] is the candle length in minutes
 /// (Sina's `scale` parameter): 5/15/30/60 intraday, 240 daily.
@@ -36,7 +38,8 @@ class StockPage extends StatefulWidget {
 }
 
 class _StockPageState extends State<StockPage> {
-  final SinaApiService _api = SinaApiService();
+  final _factory = DataSourceFactory.instance;
+  DataSource? _dataSource;
   final TextEditingController _symbolController = TextEditingController();
 
   late String _symbol = widget.initialSymbol;
@@ -75,7 +78,17 @@ class _StockPageState extends State<StockPage> {
   void initState() {
     super.initState();
     _symbolController.text = _symbol;
-    _loadAll();
+    _initDataSource();
+  }
+
+  Future<void> _initDataSource() async {
+    final ds = await _factory.getActive();
+    if (mounted) {
+      setState(() {
+        _dataSource = ds;
+      });
+      _loadAll();
+    }
   }
 
   @override
@@ -87,7 +100,15 @@ class _StockPageState extends State<StockPage> {
 
   /// Load K-line history + the first quote, then (re)start the 3s poller.
   Future<void> _loadAll() async {
+    if (_dataSource == null) return;
     _timer?.cancel();
+
+    final normalized = _dataSource!.normalizeSymbol(_symbol);
+    if (normalized != _symbol) {
+      _symbol = normalized;
+      _symbolController.text = normalized;
+    }
+
     setState(() {
       _loading = true;
       _error = null;
@@ -95,8 +116,8 @@ class _StockPageState extends State<StockPage> {
 
     try {
       final results = await Future.wait<dynamic>([
-        _api.fetchKline(_symbol, scale: _scale, datalen: 300),
-        _api.fetchRealtime(_symbol),
+        _dataSource!.fetchKline(_symbol, scale: _scale, datalen: 300),
+        _dataSource!.fetchRealtime(_symbol),
       ]);
 
       final kline = results[0] as List<KLineEntity>;
@@ -135,8 +156,9 @@ class _StockPageState extends State<StockPage> {
   /// Poll the real-time quote every 3 seconds and live-update the chart's
   /// last candle so the K-line reflects the latest tick.
   Future<void> _refreshQuote() async {
+    if (_dataSource == null) return;
     try {
-      final quote = await _api.fetchRealtime(_symbol);
+      final quote = await _dataSource!.fetchRealtime(_symbol);
       if (quote == null) return;
 
       if (_klineData.isNotEmpty) {
@@ -179,7 +201,8 @@ class _StockPageState extends State<StockPage> {
   }
 
   void _changeSymbol() {
-    final normalized = SinaApiService.normalizeSymbol(_symbolController.text);
+    if (_dataSource == null) return;
+    final normalized = _dataSource!.normalizeSymbol(_symbolController.text);
     if (normalized.isEmpty || normalized == _symbol) return;
     _symbolController.text = normalized;
     _symbol = normalized;
@@ -196,6 +219,12 @@ class _StockPageState extends State<StockPage> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF18191D),
         foregroundColor: Colors.white,
+        leading: Builder(
+          builder: (BuildContext ctx) => IconButton(
+            icon: const Icon(Icons.menu),
+            onPressed: () => Scaffold.of(ctx).openDrawer(),
+          ),
+        ),
         title: Text(_quote != null
             ? '${_quote!.name}  ${_symbol.toUpperCase()}'
             : _symbol.toUpperCase()),
@@ -212,6 +241,7 @@ class _StockPageState extends State<StockPage> {
           ),
         ],
       ),
+      drawer: _buildDrawer(),
       body: Column(
         children: <Widget>[
           _buildQuoteHeader(),
@@ -220,6 +250,12 @@ class _StockPageState extends State<StockPage> {
           Expanded(child: _buildChart()),
           if (_isSelectMode) _buildSelectionBar(),
         ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        heroTag: 'toggle_select_mode',
+        onPressed: _toggleSelectMode,
+        backgroundColor: _isSelectMode ? const Color(0xFFC15466) : const Color(0xFF4C86CD),
+        child: Icon(_isSelectMode ? Icons.close : Icons.compare_arrows),
       ),
     );
   }
@@ -396,8 +432,6 @@ class _StockPageState extends State<StockPage> {
           _divider(),
           _chip(_volHidden ? '显示量' : '隐藏量', false,
               () => setState(() => _volHidden = !_volHidden)),
-          _divider(),
-          _chip('选点', _isSelectMode, _toggleSelectMode),
         ],
       ),
     );
@@ -504,7 +538,12 @@ class _StockPageState extends State<StockPage> {
                         _xToCandleIndex(details.localPosition.dx, chartWidth);
                     _onSelectCandle(index);
                   },
-                  child: const SizedBox.expand(),
+                  onLongPressStart: (LongPressStartDetails details) {
+                    final int index =
+                        _xToCandleIndex(details.localPosition.dx, chartWidth);
+                    _onSelectCandle(index);
+                  },
+                  child: Container(color: Colors.transparent),
                 ),
               ),
             if (_loading && _klineData.isEmpty)
@@ -570,14 +609,14 @@ class _StockPageState extends State<StockPage> {
     final int n = _klineData.length;
 
     if (i1 == null) {
-      return _selectionHint('选点模式：点击图表选择第 1 根 K 线');
+      return _selectionHint('选点模式：点击或长按图表选择第 1 根 K 线');
     }
     if (i1 >= n) return const SizedBox.shrink();
     final KLineEntity e1 = _klineData[i1];
     if (i2 == null) {
       return _selectionHint(
         '已选第 1 根：${_fmtDate(e1.time)}  收盘 ${e1.close.toStringAsFixed(2)}，'
-        '点击选择第 2 根 K 线',
+        '点击或长按选择第 2 根 K 线',
       );
     }
     if (i2 >= n) return const SizedBox.shrink();
@@ -649,6 +688,123 @@ class _StockPageState extends State<StockPage> {
           '${two(dt.hour)}:${two(dt.minute)}';
     }
     return '${dt.year}-${two(dt.month)}-${two(dt.day)}';
+  }
+
+  // ─────────────────────────── Drawer ────────────────────────────────────
+
+  Widget _buildDrawer() {
+    final sources = _factory.allSources;
+    final currentDs = _dataSource;
+
+    return Drawer(
+      backgroundColor: const Color(0xFF1A1D25),
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: <Widget>[
+          DrawerHeader(
+            decoration: const BoxDecoration(color: Color(0xFF1F2229)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: <Widget>[
+                const CircleAvatar(
+                  radius: 28,
+                  backgroundColor: Color(0xFF4DAA90),
+                  child: Icon(Icons.show_chart, color: Colors.white, size: 28),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  '涨了吗',
+                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  currentDs?.displayName ?? '加载中...',
+                  style: const TextStyle(color: Color(0xFF60738E), fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Text(
+              '数据源',
+              style: TextStyle(color: Color(0xFF60738E), fontSize: 12, fontWeight: FontWeight.w500),
+            ),
+          ),
+          ...sources.map((ds) => ListTile(
+                leading: Icon(
+                  currentDs?.id == ds.id
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_unchecked,
+                  color: currentDs?.id == ds.id
+                      ? const Color(0xFF4DAA90)
+                      : const Color(0xFF60738E),
+                  size: 18,
+                ),
+                title: Text(ds.displayName, style: const TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  ds.description,
+                  style: const TextStyle(color: Color(0xFF9AA5B1), fontSize: 11),
+                ),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _factory.setActive(ds.id);
+                  if (mounted) {
+                    setState(() {
+                      _dataSource = ds;
+                    });
+                    _loadAll();
+                  }
+                },
+              )),
+          const Divider(height: 1, color: Color(0xFF2A2E38)),
+          ListTile(
+            leading: const Icon(Icons.settings, color: Color(0xFF9AA5B1)),
+            title: const Text('设置', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
+              ).then((_) async {
+                // Reload data source after returning from settings
+                final ds = await _factory.getActive();
+                if (mounted) {
+                  setState(() {
+                    _dataSource = ds;
+                  });
+                  _loadAll();
+                }
+              });
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.info_outline, color: Color(0xFF9AA5B1)),
+            title: const Text('关于', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(context);
+              _showAbout();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAbout() {
+    showAboutDialog(
+      context: context,
+      applicationName: '涨了吗',
+      applicationVersion: '1.0.0',
+      applicationIcon: const Icon(Icons.show_chart),
+      children: const <Widget>[
+        SizedBox(height: 16),
+        Text('基于 Flutter + k_chart 构建的多数据源股票看盘应用。'),
+        SizedBox(height: 8),
+        Text('支持数据源：新浪财经 (A 股)、Finnhub (全球)'),
+      ],
+    );
   }
 
   // ─────────────────────────── Symbol dialog ─────────────────────────────

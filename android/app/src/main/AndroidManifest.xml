@@ -2,7 +2,7 @@
     <!-- Access Sina Finance APIs over the network. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="股票看盘"
+        android:label="涨了吗"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">

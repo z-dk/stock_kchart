@@ -85,6 +85,12 @@ app.*.map.json
 *.cer
 *.crt
 
+# API keys / secrets in project assets
+assets/config/default_keys.json
+
+# Tool-generated logs
+tool/*_log.txt
+
 # OS / generated
 Thumbs.db
 ehthumbs.db

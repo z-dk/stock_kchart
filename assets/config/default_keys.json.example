@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this file to default_keys.json and fill in your API keys. default_keys.json is in .gitignore.",
+  "finnhub": "YOUR_FINNHUB_API_KEY_HERE"
+}

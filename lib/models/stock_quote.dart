@@ -24,38 +24,30 @@ class StockQuote {
     required this.amount,
     required this.date,
     required this.time,
+    this.overrideChange,
+    this.overrideChangePercent,
   });
 
-  /// Sina symbol with exchange prefix, e.g. `sh600519`, `sz000001`.
   final String symbol;
-
-  /// Stock name (Chinese, already decoded from GB18030).
   final String name;
-
   final double open;
   final double prevClose;
   final double current;
   final double high;
   final double low;
-
-  /// Number of traded shares.
   final double volume;
-
-  /// Traded value in yuan.
   final double amount;
-
-  /// Quote date, e.g. `2026-08-06`.
   final String date;
-
-  /// Quote time, e.g. `15:00:00`.
   final String time;
+  final double? overrideChange;
+  final double? overrideChangePercent;
 
-  /// Price change vs previous close.
-  double get change => current - prevClose;
+  double get change =>
+      overrideChange ?? (current - prevClose);
 
-  /// Price change percentage vs previous close.
   double get changePercent =>
-      prevClose == 0 ? 0 : (current - prevClose) / prevClose * 100;
+      overrideChangePercent ??
+      (prevClose == 0 ? 0 : (current - prevClose) / prevClose * 100);
 
   bool get isUp => current >= prevClose;
 
@@ -98,4 +90,47 @@ class StockQuote {
   @override
   String toString() =>
       'StockQuote($symbol $name current=$current change=$change)';
+
+  /// Parse a Finnhub quote response.
+  ///
+  /// Finnhub returns a compact JSON object:
+  ///   {"c": price, "d": change, "dp": changePct,
+  ///    "h": high, "l": low, "o": open, "pc": prevClose, "t": unixTs}
+  ///
+  /// Volume and amount are not available in the quote response → set to 0.
+  /// Name/date/time are derived from the symbol and timestamp.
+  static StockQuote fromFinnhub(String symbol, Map<String, dynamic> json) {
+    final current = (json['c'] as num?)?.toDouble() ?? 0;
+    final change = (json['d'] as num?)?.toDouble() ?? 0;
+    final changePercent = (json['dp'] as num?)?.toDouble() ?? 0;
+    final high = (json['h'] as num?)?.toDouble() ?? 0;
+    final low = (json['l'] as num?)?.toDouble() ?? 0;
+    final open = (json['o'] as num?)?.toDouble() ?? 0;
+    final prevClose = (json['pc'] as num?)?.toDouble() ?? 0;
+    final timestamp = (json['t'] as num?)?.toInt() ?? 0;
+
+    final dt = timestamp > 0
+        ? DateTime.fromMillisecondsSinceEpoch(timestamp * 1000)
+        : DateTime.now();
+    final date =
+        '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+    final time =
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+
+    return StockQuote(
+      symbol: symbol,
+      name: symbol, // Finnhub does not return company name
+      open: open,
+      prevClose: prevClose,
+      current: current,
+      high: high,
+      low: low,
+      volume: 0, // Not available in Finnhub quote
+      amount: 0,
+      date: date,
+      time: time,
+      overrideChange: change,
+      overrideChangePercent: changePercent,
+    );
+  }
 }
