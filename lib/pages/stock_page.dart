@@ -62,15 +62,20 @@ class _StockPageState extends State<StockPage> {
   bool _volHidden = false;
   bool _isLine = false;
 
-  // Selection mode: tap to pick 2 candles, then show the close-price change
-  // percent in a bottom info bar. Because k_chart's _KChartWidgetState keeps
-  // scaleX/scrollX private, the coordinate→index math only works when the
-  // chart is in its initial (unscaled/unscrolled) state, so entering select
-  // mode bumps _chartResetKey to force a KChartWidget rebuild.
-  bool _isSelectMode = false;
+  // Two-finger long-press comparison: when two fingers rest on the chart
+  // simultaneously for ~450ms, the candles under each finger are selected and
+  // their data + mutual price change are shown in a bottom info bar. Because
+  // k_chart's _KChartWidgetState keeps scaleX/scrollX private, the
+  // coordinate→index math only works in the initial (unscaled/unscrolled)
+  // state, so a comparison bumps _chartResetKey to rebuild KChartWidget.
   int? _selIndex1;
   int? _selIndex2;
   int _chartResetKey = 0;
+  double _chartWidth = 0;
+  final Map<int, _PointerTrack> _pointers = <int, _PointerTrack>{};
+
+  static const Duration _longPressThreshold = Duration(milliseconds: 450);
+  static const double _moveTolerance = 20.0;
 
   Timer? _timer;
 
@@ -95,6 +100,10 @@ class _StockPageState extends State<StockPage> {
   void dispose() {
     _timer?.cancel();
     _symbolController.dispose();
+    for (final _PointerTrack t in _pointers.values) {
+      t.timer?.cancel();
+    }
+    _pointers.clear();
     super.dispose();
   }
 
@@ -248,14 +257,8 @@ class _StockPageState extends State<StockPage> {
           _buildPeriodBar(),
           _buildIndicatorBar(),
           Expanded(child: _buildChart()),
-          if (_isSelectMode) _buildSelectionBar(),
+          if (_selIndex1 != null && _selIndex2 != null) _buildSelectionBar(),
         ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        heroTag: 'toggle_select_mode',
-        onPressed: _toggleSelectMode,
-        backgroundColor: _isSelectMode ? const Color(0xFFC15466) : const Color(0xFF4C86CD),
-        child: Icon(_isSelectMode ? Icons.close : Icons.compare_arrows),
       ),
     );
   }
@@ -437,19 +440,6 @@ class _StockPageState extends State<StockPage> {
     );
   }
 
-  void _toggleSelectMode() {
-    setState(() {
-      _isSelectMode = !_isSelectMode;
-      if (_isSelectMode) {
-        // Rebuild KChartWidget so scaleX/scrollX reset to defaults; the
-        // coordinate→index math assumes this initial state.
-        _chartResetKey++;
-        _selIndex1 = null;
-        _selIndex2 = null;
-      }
-    });
-  }
-
   Widget _chip(String label, bool selected, VoidCallback onTap) {
     return Padding(
       padding: const EdgeInsets.only(right: 6),
@@ -491,61 +481,57 @@ class _StockPageState extends State<StockPage> {
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         final double chartWidth = constraints.maxWidth;
+        _chartWidth = chartWidth;
         return Stack(
           children: <Widget>[
-            // AbsorbPointer blocks KChartWidget's own gestures while in
-            // select mode so the chart can't be zoomed/panned (which would
-            // invalidate the coordinate→index math).
-            AbsorbPointer(
-              absorbing: _isSelectMode,
-              child: KeyedSubtree(
-                key: ValueKey<int>(_chartResetKey),
-                child: KChartWidget(
-                  _klineData,
-                  _chartStyle,
-                  _chartColors,
-                  isTrendLine: false,
-                  isLine: _isLine,
-                  mainState: _mainState,
-                  secondaryState: _secondaryState,
-                  volHidden: _volHidden,
-                  fixedLength: 2,
-                  maDayList: const <int>[5, 10, 20],
-                  timeFormat: _isIntraday
-                      ? TimeFormat.YEAR_MONTH_DAY_WITH_HOUR
-                      : TimeFormat.YEAR_MONTH_DAY,
-                  translations: kChartTranslations,
-                  showNowPrice: true,
-                  hideGrid: false,
-                  isOnDrag: (bool drag) {
-                    // Pause polling while the user drags to keep interaction smooth.
-                    if (drag) {
-                      _timer?.cancel();
-                    } else {
-                      _startPolling();
-                    }
-                  },
-                ),
+            KeyedSubtree(
+              key: ValueKey<int>(_chartResetKey),
+              child: KChartWidget(
+                _klineData,
+                _chartStyle,
+                _chartColors,
+                isTrendLine: false,
+                isLine: _isLine,
+                mainState: _mainState,
+                secondaryState: _secondaryState,
+                volHidden: _volHidden,
+                fixedLength: 2,
+                maDayList: const <int>[5, 10, 20],
+                timeFormat: _isIntraday
+                    ? TimeFormat.YEAR_MONTH_DAY_WITH_HOUR
+                    : TimeFormat.YEAR_MONTH_DAY,
+                translations: kChartTranslations,
+                showNowPrice: true,
+                hideGrid: false,
+                isOnDrag: (bool drag) {
+                  // Pause polling while the user drags to keep interaction smooth.
+                  if (drag) {
+                    _timer?.cancel();
+                  } else {
+                    _startPolling();
+                  }
+                },
               ),
             ),
-            // Selection-mode overlay: capture taps, map x→candle index.
-            if (_isSelectMode)
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapUp: (TapUpDetails details) {
-                    final int index =
-                        _xToCandleIndex(details.localPosition.dx, chartWidth);
-                    _onSelectCandle(index);
-                  },
-                  onLongPressStart: (LongPressStartDetails details) {
-                    final int index =
-                        _xToCandleIndex(details.localPosition.dx, chartWidth);
-                    _onSelectCandle(index);
-                  },
-                  child: Container(color: Colors.transparent),
-                ),
+            // Two-finger long-press overlay: observe pointers without blocking
+            // the chart's own pan/zoom or single-finger long-press crosshair.
+            // When two fingers rest still for ~450ms, the candles beneath them
+            // are selected for comparison.
+            Positioned.fill(
+              child: Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: _onPointerDown,
+                onPointerMove: _onPointerMove,
+                onPointerUp: _onPointerUp,
+                onPointerCancel: _onPointerCancel,
               ),
+            ),
+            // Native-style dual overlay: two crosshair lines + an OHLC info box
+            // per selected candle. IgnorePointer so it never steals touches.
+            if (_selIndex1 != null &&
+                _selIndex2 != null &&
+                _klineData.isNotEmpty)
+              _buildCompareOverlay(chartWidth),
             if (_loading && _klineData.isEmpty)
               const Center(child: CircularProgressIndicator()),
             if (_klineData.isEmpty && !_loading)
@@ -561,13 +547,75 @@ class _StockPageState extends State<StockPage> {
     );
   }
 
+  // ─────────────────────── Two-finger long-press compare ─────────────────
+
+  void _onPointerDown(PointerDownEvent event) {
+    final track = _PointerTrack(event.localPosition, DateTime.now());
+    _pointers[event.pointer] = track;
+    track.timer = Timer(_longPressThreshold, () {
+      track.longPressed = true;
+      _tryTriggerComparison();
+    });
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    final track = _pointers[event.pointer];
+    if (track == null) return;
+    // A finger that drifts beyond the tolerance before the long-press fires
+    // is treated as a drag/pan, not a selection.
+    if (!track.longPressed &&
+        (event.localPosition - track.downLocal).distance > _moveTolerance) {
+      track.timer?.cancel();
+      track.timer = null;
+    }
+  }
+
+  void _onPointerUp(PointerUpEvent event) => _cancelPointer(event.pointer);
+
+  void _onPointerCancel(PointerCancelEvent event) =>
+      _cancelPointer(event.pointer);
+
+  void _cancelPointer(int pointer) {
+    final track = _pointers.remove(pointer);
+    track?.timer?.cancel();
+  }
+
+  /// When at least two fingers are long-pressing simultaneously, select the
+  /// candles under the earliest two and reveal the comparison bar.
+  void _tryTriggerComparison() {
+    final held = _pointers.values
+        .where((_PointerTrack t) => t.longPressed)
+        .toList()
+      ..sort((_PointerTrack a, _PointerTrack b) =>
+          a.downTime.compareTo(b.downTime));
+    if (held.length < 2) return;
+    if (_chartWidth == 0 || _klineData.isEmpty) return;
+    final int i1 = _xToCandleIndex(held[0].downLocal.dx, _chartWidth);
+    final int i2 = _xToCandleIndex(held[1].downLocal.dx, _chartWidth);
+    if (i1 < 0 || i2 < 0) return;
+    setState(() {
+      _selIndex1 = i1;
+      _selIndex2 = i2;
+      // Rebuild KChartWidget so scaleX/scrollX reset to defaults; the
+      // coordinate→index math above assumes this initial state.
+      _chartResetKey++;
+    });
+  }
+
+  void _clearSelection() {
+    setState(() {
+      _selIndex1 = null;
+      _selIndex2 = null;
+    });
+  }
+
   // ─────────────────────────── Candle selection ──────────────────────────
 
   /// Map a screen x-coordinate to a candle index, assuming the chart is in
   /// its initial state (scaleX=1.0, scrollX=0). This mirrors the math in
   /// k_chart's BaseChartPainter.calculateSelectedX, but only works when the
-  /// chart has not been zoomed/panned — which is why select mode rebuilds
-  /// KChartWidget via _chartResetKey on entry.
+  /// chart has not been zoomed/panned — which is why a comparison rebuilds
+  /// KChartWidget via _chartResetKey.
   int _xToCandleIndex(double x, double chartWidth) {
     final int itemCount = _klineData.length;
     if (itemCount == 0) return -1;
@@ -588,76 +636,185 @@ class _StockPageState extends State<StockPage> {
     return index;
   }
 
-  void _onSelectCandle(int index) {
-    if (index < 0 || index >= _klineData.length) return;
-    setState(() {
-      if (_selIndex1 == null) {
-        _selIndex1 = index;
-      } else if (_selIndex2 == null) {
-        _selIndex2 = index;
-      } else {
-        // Both selected already — restart with a new first pick.
-        _selIndex1 = index;
-        _selIndex2 = null;
-      }
-    });
+  /// Inverse of [_xToCandleIndex]: map a candle index back to its screen
+  /// x-coordinate, assuming the chart is in its initial (reset) state.
+  double _candleIndexToX(int index, double chartWidth) {
+    const double xFrontPadding = 100.0; // KChartWidget default
+    final double pointWidth = _chartStyle.pointWidth; // 11.0
+    final int itemCount = _klineData.length;
+    final double mDataLen = itemCount * pointWidth;
+    double minTranslateX =
+        -mDataLen + chartWidth - pointWidth / 2 - xFrontPadding;
+    if (minTranslateX > 0) minTranslateX = 0;
+    // translateX = index * pointWidth + pointWidth / 2, and
+    // x = translateX + minTranslateX (from translateX = -minTranslateX + x).
+    return index * pointWidth + pointWidth / 2 + minTranslateX;
+  }
+
+  // ─────────────────────────── Compare overlay ───────────────────────────
+
+  /// Native-style dual overlay drawn on top of the chart once two candles are
+  /// selected: a dashed vertical crosshair at each candle's screen-x plus an
+  /// OHLC info box beside each. Only renders correctly while the chart is in
+  /// its initial (reset) state, which is why comparison bumps _chartResetKey.
+  Widget _buildCompareOverlay(double chartWidth) {
+    final int? i1 = _selIndex1;
+    final int? i2 = _selIndex2;
+    if (i1 == null || i2 == null) return const SizedBox.shrink();
+    final double x1 = _candleIndexToX(i1, chartWidth);
+    final double x2 = _candleIndexToX(i2, chartWidth);
+    final KLineEntity e1 = _klineData[i1];
+    final KLineEntity e2 = _klineData[i2];
+    final bool left1 = x1 < chartWidth / 2;
+    final bool left2 = x2 < chartWidth / 2;
+    // If both boxes would land on the same side, drop the second below the
+    // first so they don't overlap.
+    final double top2 = (left1 == left2) ? 72.0 : 0.0;
+
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Stack(
+          children: <Widget>[
+            CustomPaint(
+              size: Size.infinite,
+              painter: _CompareCrossPainter(
+                x1: x1,
+                x2: x2,
+                color: _chartColors.selectBorderColor,
+              ),
+            ),
+            _compareInfoBox(e1, left1, 0, chartWidth),
+            _compareInfoBox(e2, left2, top2, chartWidth),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _compareInfoBox(
+      KLineEntity e, bool left, double topOffset, double chartWidth) {
+    const double boxW = 116;
+    final double leftPos = left ? 4.0 : chartWidth - boxW - 4;
+    return Positioned(
+      left: leftPos,
+      top: 24 + topOffset,
+      child: Container(
+        width: boxW,
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: _chartColors.selectFillColor,
+          border:
+              Border.all(color: _chartColors.selectBorderColor, width: 0.5),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(_fmtDate(e.time),
+                style:
+                    const TextStyle(color: Color(0xFF9AA5B1), fontSize: 9)),
+            const SizedBox(height: 2),
+            _row('开', e.open.toStringAsFixed(2)),
+            _row('高', e.high.toStringAsFixed(2)),
+            _row('低', e.low.toStringAsFixed(2)),
+            _row('收', e.close.toStringAsFixed(2)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _row(String k, String v) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: <Widget>[
+          Text(k,
+              style:
+                  const TextStyle(color: Color(0xFF60738E), fontSize: 9)),
+          Text(v,
+              style:
+                  const TextStyle(color: Color(0xFFD7DCE3), fontSize: 9)),
+        ],
+      ),
+    );
   }
 
   Widget _buildSelectionBar() {
     final int? i1 = _selIndex1;
     final int? i2 = _selIndex2;
     final int n = _klineData.length;
-
-    if (i1 == null) {
-      return _selectionHint('选点模式：点击或长按图表选择第 1 根 K 线');
+    if (i1 == null || i2 == null || i1 >= n || i2 >= n) {
+      return const SizedBox.shrink();
     }
-    if (i1 >= n) return const SizedBox.shrink();
-    final KLineEntity e1 = _klineData[i1];
-    if (i2 == null) {
-      return _selectionHint(
-        '已选第 1 根：${_fmtDate(e1.time)}  收盘 ${e1.close.toStringAsFixed(2)}，'
-        '点击或长按选择第 2 根 K 线',
+
+    // Order: start = older candle (smaller index), end = newer (larger index),
+    // so the change reads as newer vs older.
+    final int startIdx = i1 < i2 ? i1 : i2;
+    final int endIdx = i1 < i2 ? i2 : i1;
+    final KLineEntity a = _klineData[startIdx];
+    final KLineEntity b = _klineData[endIdx];
+    final double change = b.close - a.close;
+    final double pct = a.close == 0 ? 0.0 : change / a.close * 100;
+    final bool up = change >= 0;
+    final Color color = up ? const Color(0xFF4DAA90) : const Color(0xFFC15466);
+
+    Widget candleBlock(String tag, KLineEntity e) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            '$tag  ${_fmtDate(e.time)}',
+            style: const TextStyle(color: Color(0xFF9AA5B1), fontSize: 11),
+          ),
+          const SizedBox(height: 2),
+          Wrap(
+            spacing: 12,
+            runSpacing: 2,
+            children: <Widget>[
+              _kv('开', e.open.toStringAsFixed(2)),
+              _kv('高', e.high.toStringAsFixed(2)),
+              _kv('低', e.low.toStringAsFixed(2)),
+              _kv('收', e.close.toStringAsFixed(2)),
+            ],
+          ),
+        ],
       );
     }
-    if (i2 >= n) return const SizedBox.shrink();
-    final KLineEntity e2 = _klineData[i2];
-    final double change = e2.close - e1.close;
-    final double pct = e1.close == 0 ? 0.0 : change / e1.close * 100;
-    final bool up = change >= 0;
-    final Color color =
-        up ? const Color(0xFF4DAA90) : const Color(0xFFC15466);
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
       color: const Color(0xFF1F2229),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Expanded(
-                child: Text(
-                  '起：${_fmtDate(e1.time)}  ${e1.close.toStringAsFixed(2)}',
-                  style: const TextStyle(
-                      color: Color(0xFF9AA5B1), fontSize: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    candleBlock('起', a),
+                    const SizedBox(height: 6),
+                    candleBlock('终', b),
+                  ],
                 ),
               ),
-              const Icon(Icons.arrow_forward,
-                  color: Color(0xFF60738E), size: 14),
-              Expanded(
-                child: Text(
-                  '终：${_fmtDate(e2.time)}  ${e2.close.toStringAsFixed(2)}',
-                  style: const TextStyle(
-                      color: Color(0xFF9AA5B1), fontSize: 12),
-                  textAlign: TextAlign.right,
-                ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 16, color: Color(0xFF60738E)),
+                onPressed: _clearSelection,
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+                tooltip: '清除选择',
               ),
             ],
           ),
           const SizedBox(height: 6),
           Text(
-            '${up ? '涨幅' : '跌幅'}：${up ? '+' : ''}${change.toStringAsFixed(2)}  '
+            '涨跌幅：${up ? '+' : ''}${change.toStringAsFixed(2)}  '
             '(${pct.toStringAsFixed(2)}%)',
             style: TextStyle(
                 color: color, fontSize: 14, fontWeight: FontWeight.bold),
@@ -667,14 +824,17 @@ class _StockPageState extends State<StockPage> {
     );
   }
 
-  Widget _selectionHint(String text) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-      color: const Color(0xFF1F2229),
-      child: Text(
-        text,
-        style: const TextStyle(color: Color(0xFF9AA5B1), fontSize: 12),
+  Widget _kv(String k, String v) {
+    return RichText(
+      text: TextSpan(
+        children: <TextSpan>[
+          TextSpan(
+              text: '$k ',
+              style: const TextStyle(color: Color(0xFF60738E), fontSize: 11)),
+          TextSpan(
+              text: v,
+              style: const TextStyle(color: Color(0xFFD7DCE3), fontSize: 11)),
+        ],
       ),
     );
   }
@@ -876,4 +1036,62 @@ class _StockPageState extends State<StockPage> {
     if (a >= 10000) return '${(a / 10000).toStringAsFixed(2)}万';
     return a.toStringAsFixed(0);
   }
+}
+
+/// Per-finger tracking state for the two-finger long-press comparison.
+class _PointerTrack {
+  _PointerTrack(this.downLocal, this.downTime);
+
+  /// Finger position (chart-local coordinates) at the moment of touch-down.
+  final Offset downLocal;
+
+  /// When the finger first touched the screen — used to order simultaneous
+  /// long-presses deterministically.
+  final DateTime downTime;
+
+  /// One-shot timer that fires [_StockPageState._longPressThreshold] after
+  /// touch-down; cancelled if the finger drifts beyond the move tolerance.
+  Timer? timer;
+
+  /// True once [timer] has fired (the finger rested still long enough).
+  bool longPressed = false;
+}
+
+/// Draws a dashed vertical crosshair line at each of two selected candles'
+/// screen-x positions, mimicking k_chart's native selection crosshair.
+class _CompareCrossPainter extends CustomPainter {
+  _CompareCrossPainter({
+    required this.x1,
+    required this.x2,
+    required this.color,
+  });
+
+  final double x1;
+  final double x2;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()
+      ..color = color
+      ..strokeWidth = 0.6
+      ..style = PaintingStyle.stroke;
+    for (final double x in <double>[x1, x2]) {
+      _drawDashedVertical(canvas, x, size.height, paint);
+    }
+  }
+
+  void _drawDashedVertical(Canvas canvas, double x, double h, Paint paint) {
+    const double dash = 4.0;
+    const double gap = 3.0;
+    double y = 0;
+    while (y < h) {
+      canvas.drawLine(Offset(x, y), Offset(x, y + dash), paint);
+      y += dash + gap;
+    }
+  }
+
+  @override
+  bool shouldRepaint(_CompareCrossPainter old) =>
+      x1 != old.x1 || x2 != old.x2 || color != old.color;
 }
