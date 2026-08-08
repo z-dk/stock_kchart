@@ -134,3 +134,51 @@ class StockQuote {
     );
   }
 }
+
+/// A stock search suggestion returned by the Eastmoney suggest API.
+///
+/// Each result carries the 6-digit [code], Chinese [name], pinyin initials
+/// [pinyin], and the exchange [market] (`sh`/`sz`). The Sina-style [symbol]
+/// (e.g. `sh600519`) is derived for direct use with the active data source.
+class StockSearchResult {
+  StockSearchResult({
+    required this.code,
+    required this.name,
+    required this.pinyin,
+    required this.market,
+  });
+
+  /// 6-digit stock code, e.g. `600519`.
+  final String code;
+
+  /// Chinese stock name, e.g. `贵州茅台`.
+  final String name;
+
+  /// Pinyin initials, e.g. `GZMT`.
+  final String pinyin;
+
+  /// Exchange prefix: `sh` (Shanghai) or `sz` (Shenzhen).
+  final String market;
+
+  /// Full Sina-style symbol, e.g. `sh600519`.
+  String get symbol => '$market$code';
+
+  /// Parse from Eastmoney suggest API item.
+  /// `MktNum`: `1` → Shanghai (sh), `0` → Shenzhen (sz).
+  factory StockSearchResult.fromEastmoney(Map<String, dynamic> json) {
+    final code = (json['Code'] ?? '').toString();
+    final name = (json['Name'] ?? '').toString();
+    final pinyin = (json['PinYin'] ?? '').toString();
+    final mktNum = (json['MktNum'] ?? '0').toString();
+    final market = mktNum == '1' ? 'sh' : 'sz';
+    return StockSearchResult(
+      code: code,
+      name: name,
+      pinyin: pinyin,
+      market: market,
+    );
+  }
+
+  @override
+  String toString() => 'StockSearchResult($symbol $name)';
+}
