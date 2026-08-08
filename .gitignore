@@ -1,4 +1,5 @@
 # Miscellaneous
+.trae/
 *.class
 *.log
 *.pyc

@@ -14,8 +14,8 @@ import 'data_source.dart';
 ///  * K-line history: `http://push2his.eastmoney.com/api/qt/stock/kline/get`
 ///    Returns JSON with `klines` array of comma-separated OHLCV strings.
 ///
-/// Symbol format: `secid` = `<market>.<code>` where market is `0` (Shanghai)
-/// or `1` (Shenzhen). For example `0.600519` = 贵州茅台 (SH).
+/// Symbol format: `secid` = `<market>.<code>` where market is `1` (Shanghai)
+/// or `0` (Shenzhen). For example `1.600519` = 贵州茅台 (SH).
 class EastmoneyDataSource implements DataSource {
   EastmoneyDataSource._();
   static final EastmoneyDataSource instance = EastmoneyDataSource._();
@@ -47,16 +47,20 @@ class EastmoneyDataSource implements DataSource {
 
   @override
   String normalizeSymbol(String input) {
-    final s = input.trim().toLowerCase();
+    final trimmed = input.trim();
 
-    // Already in secid format (e.g. 0.600519).
-    if (RegExp(r'^[01]\.\d{6}$').hasMatch(s)) return s;
+    // Already in secid format (e.g. 1.600519, 116.00700, 105.AAPL) — return
+    // verbatim: US tickers are case-sensitive, so don't lowercase them.
+    if (RegExp(r'^\d+\.[A-Za-z0-9]+$').hasMatch(trimmed)) return trimmed;
+
+    final s = trimmed.toLowerCase();
 
     // Already prefixed with sh/sz.
     if (s.startsWith('sh') || s.startsWith('sz')) {
       final code = s.substring(2);
       if (code.length == 6 && int.tryParse(code) != null) {
-        final prefix = s.startsWith('sh') ? '0' : '1';
+        // Eastmoney secid: 1 = Shanghai (SH), 0 = Shenzhen (SZ).
+        final prefix = s.startsWith('sh') ? '1' : '0';
         return '$prefix.$code';
       }
     }
@@ -65,8 +69,8 @@ class EastmoneyDataSource implements DataSource {
     final digits = s.replaceAll(RegExp(r'[^\d]'), '');
     if (digits.length == 6) {
       final first = digits[0];
-      // 6/9 → Shanghai (secid prefix 0), otherwise Shenzhen (prefix 1).
-      final prefix = (first == '6' || first == '9') ? '0' : '1';
+      // 6/9 → Shanghai (secid prefix 1), otherwise Shenzhen (prefix 0).
+      final prefix = (first == '6' || first == '9') ? '1' : '0';
       return '$prefix.$digits';
     }
 
@@ -184,9 +188,18 @@ class EastmoneyDataSource implements DataSource {
       for (final item in data) {
         if (item is! Map<String, dynamic>) continue;
         final classify = (item['Classify'] ?? '').toString();
-        if (classify != 'AStock') continue;
+        // A-shares, HK and US stocks are all loadable via Eastmoney's kline/
+        // quote APIs (each carries a valid QuoteID secid). Other classes
+        // (indices, bonds, funds…) are skipped.
+        if (classify != 'AStock' &&
+            classify != 'HK' &&
+            classify != 'UsStock') {
+          continue;
+        }
         final result = StockSearchResult.fromEastmoney(item);
-        if (result.code.isNotEmpty && result.name.isNotEmpty) {
+        if (result.code.isNotEmpty &&
+            result.name.isNotEmpty &&
+            result.symbol.isNotEmpty) {
           results.add(result);
         }
       }

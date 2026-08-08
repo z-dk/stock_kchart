@@ -1059,7 +1059,7 @@ class _StockPageState extends State<StockPage> {
                                                           color: Colors.white,
                                                           fontSize: 15)),
                                                   const SizedBox(height: 2),
-                                                  Text(s.symbol.toUpperCase(),
+                                                  Text(s.code.toUpperCase(),
                                                       style: const TextStyle(
                                                           color: Color(
                                                               0xFF60738E),
@@ -1088,7 +1088,11 @@ class _StockPageState extends State<StockPage> {
                                             Text(
                                                 s.market == 'sh'
                                                     ? '沪A'
-                                                    : '深A',
+                                                    : s.market == 'sz'
+                                                        ? '深A'
+                                                        : s.market == 'hk'
+                                                            ? '港股'
+                                                            : '美股',
                                                 style: const TextStyle(
                                                     color: Color(0xFF4C86CD),
                                                     fontSize: 12)),

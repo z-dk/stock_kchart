@@ -134,9 +134,10 @@ class StockQuote {
 
 /// A stock search suggestion returned by data source search APIs.
 ///
-/// Each result carries the 6-digit [code], Chinese [name], pinyin initials
-/// [pinyin], the exchange [market] (`sh`/`sz`), and the [dataSourceId]
-/// identifying which provider returned this result.
+/// Each result carries the stock [code], [name], pinyin initials [pinyin],
+/// the [market] tag (`sh`/`sz`/`hk`/`us`), the [dataSourceId] identifying
+/// which provider returned it, and [symbol] — the loadable identifier for
+/// that provider.
 class StockSearchResult {
   StockSearchResult({
     required this.code,
@@ -144,41 +145,60 @@ class StockSearchResult {
     required this.pinyin,
     required this.market,
     required this.dataSourceId,
+    required this.symbol,
   });
 
-  /// 6-digit stock code, e.g. `600519`.
+  /// Stock code, e.g. `600519` (A-share), `00700` (HK), `AAPL` (US).
   final String code;
 
-  /// Chinese stock name, e.g. `贵州茅台`.
+  /// Stock name, e.g. `贵州茅台`.
   final String name;
 
   /// Pinyin initials, e.g. `GZMT`.
   final String pinyin;
 
-  /// Exchange prefix: `sh` (Shanghai) or `sz` (Shenzhen).
+  /// Market tag for UI: `sh`/`sz` (A-share), `hk` (HK), `us` (US).
   final String market;
 
   /// Which data source returned this result (e.g. 'sina', 'eastmoney').
   final String dataSourceId;
 
-  /// Full Sina-style symbol, e.g. `sh600519`.
-  String get symbol => '$market$code';
+  /// Loadable identifier for this result's data source. For Sina this is the
+  /// `sh/sz`-prefixed symbol (e.g. `sh600519`); for Eastmoney it is the full
+  /// `secid` from the API (e.g. `1.600519`, `116.00700`, `105.AAPL`).
+  final String symbol;
 
   /// Parse from Eastmoney suggest API item.
-  /// `MktNum`: `1` → Shanghai (sh), `0` → Shenzhen (sz).
+  ///
+  /// Uses `QuoteID` (the full secid, e.g. `1.600519`/`116.00700`/`105.AAPL`)
+  /// as the loadable [symbol]. `Classify` picks the UI market tag: AStock→sh/sz
+  /// (via `MktNum` 1=SH/0=SZ), HK→hk, UsStock→us.
   factory StockSearchResult.fromEastmoney(Map<String, dynamic> json,
       {String dataSourceId = 'eastmoney'}) {
     final code = (json['Code'] ?? '').toString();
     final name = (json['Name'] ?? '').toString();
     final pinyin = (json['PinYin'] ?? '').toString();
-    final mktNum = (json['MktNum'] ?? '0').toString();
-    final market = mktNum == '1' ? 'sh' : 'sz';
+    final classify = (json['Classify'] ?? '').toString();
+    final quoteId = (json['QuoteID'] ?? '').toString();
+
+    String market;
+    if (classify == 'HK') {
+      market = 'hk';
+    } else if (classify == 'UsStock') {
+      market = 'us';
+    } else {
+      // AStock — MktNum: 1 → Shanghai (sh), 0 → Shenzhen (sz).
+      final mktNum = (json['MktNum'] ?? '0').toString();
+      market = mktNum == '1' ? 'sh' : 'sz';
+    }
+
     return StockSearchResult(
       code: code,
       name: name,
       pinyin: pinyin,
       market: market,
       dataSourceId: dataSourceId,
+      symbol: quoteId,
     );
   }
 
@@ -195,6 +215,7 @@ class StockSearchResult {
         pinyin: '',
         market: 'sh',
         dataSourceId: dataSourceId,
+        symbol: '',
       );
     }
     final name = parts[0];
@@ -207,6 +228,7 @@ class StockSearchResult {
       pinyin: '',
       market: market,
       dataSourceId: dataSourceId,
+      symbol: fullCode,
     );
   }
 
