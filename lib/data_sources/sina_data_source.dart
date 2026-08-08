@@ -143,6 +143,46 @@ class SinaDataSource implements DataSource {
     return result;
   }
 
+  @override
+  Future<List<StockSearchResult>> search(String keyword) async {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return <StockSearchResult>[];
+
+    final uri = Uri.parse(
+      'https://suggest3.sinajs.cn/suggest/type=&key=${Uri.encodeComponent(kw)}&name=suggestdata',
+    );
+
+    try {
+      final response = await http.get(uri, headers: _headers).timeout(_timeout);
+      if (response.statusCode != 200) return <StockSearchResult>[];
+
+      // Response: var suggestdata="名称,类型,代码,完整代码,名称;...";
+      final text = gbk.decode(response.bodyBytes);
+      final match = RegExp(r'"([^"]*)"').firstMatch(text);
+      if (match == null) return <StockSearchResult>[];
+
+      final payload = match.group(1)!;
+      if (payload.isEmpty) return <StockSearchResult>[];
+
+      final results = <StockSearchResult>[];
+      for (final item in payload.split(';')) {
+        if (item.isEmpty) continue;
+        final parts = item.split(',');
+        if (parts.length < 4) continue;
+        // Type 11=沪A, 12=深A — skip other types.
+        final type = parts[1];
+        if (type != '11' && type != '12') continue;
+        final result = StockSearchResult.fromSina(item);
+        if (result.code.isNotEmpty && result.name.isNotEmpty) {
+          results.add(result);
+        }
+      }
+      return results;
+    } catch (_) {
+      return <StockSearchResult>[];
+    }
+  }
+
   static int _parseTimeMs(String day) {
     if (day.isEmpty) return DateTime.now().millisecondsSinceEpoch;
     final dt = DateTime.tryParse(day) ?? DateTime.now();

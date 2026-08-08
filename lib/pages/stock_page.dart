@@ -6,9 +6,9 @@ import 'package:k_chart/flutter_k_chart.dart';
 
 import '../data_sources/data_source.dart';
 import '../data_sources/data_source_factory.dart';
+import '../data_sources/sina_data_source.dart';
 import '../models/stock_quote.dart';
 import '../services/stock_search_service.dart';
-import 'settings_page.dart';
 
 /// A selectable K-line period. [scale] is the candle length in minutes
 /// (Sina's `scale` parameter): 5/15/30/60 intraday, 240 daily.
@@ -88,10 +88,9 @@ class _StockPageState extends State<StockPage> {
   }
 
   Future<void> _initDataSource() async {
-    final ds = await _factory.getActive();
     if (mounted) {
       setState(() {
-        _dataSource = ds;
+        _dataSource = SinaDataSource.instance;
       });
       _loadAll();
     }
@@ -223,14 +222,15 @@ class _StockPageState extends State<StockPage> {
   /// Switch to a symbol chosen from the search dropdown.
   ///
   /// Unlike [_changeSymbol], the [symbol] comes straight from a search result
-  /// and is already in the provider's native format, so no normalization is
-  /// needed. This is the key path that avoids loading failures caused by
-  /// invalid user input — the chart only loads a verified symbol.
-  void _changeSymbolTo(String symbol) {
-    if (_dataSource == null) return;
+  /// and [ds] is the data source that returned it. The symbol is normalized
+  /// to the provider's native format before loading. This is the key path
+  /// that avoids loading failures caused by invalid user input — the chart
+  /// only loads a verified symbol from a verified source.
+  void _changeSymbolTo(String symbol, DataSource ds) {
     if (symbol.isEmpty || symbol == _symbol) return;
     _symbolController.text = symbol;
     _symbol = symbol;
+    _dataSource = ds;
     FocusScope.of(context).unfocus();
     _loadAll();
   }
@@ -869,9 +869,6 @@ class _StockPageState extends State<StockPage> {
   // ─────────────────────────── Drawer ────────────────────────────────────
 
   Widget _buildDrawer() {
-    final sources = _factory.allSources;
-    final currentDs = _dataSource;
-
     return Drawer(
       backgroundColor: const Color(0xFF1A1D25),
       child: ListView(
@@ -894,66 +891,12 @@ class _StockPageState extends State<StockPage> {
                   style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  currentDs?.displayName ?? '加载中...',
-                  style: const TextStyle(color: Color(0xFF60738E), fontSize: 12),
-                ),
+                const Text(
+                    '多数据源 A 股看盘',
+                    style: TextStyle(color: Color(0xFF60738E), fontSize: 12),
+                  ),
               ],
             ),
-          ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text(
-              '数据源',
-              style: TextStyle(color: Color(0xFF60738E), fontSize: 12, fontWeight: FontWeight.w500),
-            ),
-          ),
-          ...sources.map((ds) => ListTile(
-                leading: Icon(
-                  currentDs?.id == ds.id
-                      ? Icons.radio_button_checked
-                      : Icons.radio_button_unchecked,
-                  color: currentDs?.id == ds.id
-                      ? const Color(0xFF4DAA90)
-                      : const Color(0xFF60738E),
-                  size: 18,
-                ),
-                title: Text(ds.displayName, style: const TextStyle(color: Colors.white)),
-                subtitle: Text(
-                  ds.description,
-                  style: const TextStyle(color: Color(0xFF9AA5B1), fontSize: 11),
-                ),
-                onTap: () async {
-                  Navigator.pop(context);
-                  await _factory.setActive(ds.id);
-                  if (mounted) {
-                    setState(() {
-                      _dataSource = ds;
-                    });
-                    _loadAll();
-                  }
-                },
-              )),
-          const Divider(height: 1, color: Color(0xFF2A2E38)),
-          ListTile(
-            leading: const Icon(Icons.settings, color: Color(0xFF9AA5B1)),
-            title: const Text('设置', style: TextStyle(color: Colors.white)),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
-              ).then((_) async {
-                // Reload data source after returning from settings
-                final ds = await _factory.getActive();
-                if (mounted) {
-                  setState(() {
-                    _dataSource = ds;
-                  });
-                  _loadAll();
-                }
-              });
-            },
           ),
           ListTile(
             leading: const Icon(Icons.info_outline, color: Color(0xFF9AA5B1)),
@@ -972,13 +915,13 @@ class _StockPageState extends State<StockPage> {
     showAboutDialog(
       context: context,
       applicationName: '涨了吗',
-      applicationVersion: '1.0.0',
+      applicationVersion: '1.1.0',
       applicationIcon: const Icon(Icons.show_chart),
       children: const <Widget>[
         SizedBox(height: 16),
         Text('基于 Flutter + k_chart 构建的多数据源股票看盘应用。'),
         SizedBox(height: 8),
-        Text('支持数据源：新浪财经 (A 股)、Finnhub (全球)'),
+        Text('支持数据源：新浪财经、东方财富'),
       ],
     );
   }
@@ -1050,7 +993,11 @@ class _StockPageState extends State<StockPage> {
                         debounce?.cancel();
                         Navigator.of(ctx).pop();
                         if (suggestions.isNotEmpty) {
-                          _changeSymbolTo(suggestions.first.symbol);
+                          final s = suggestions.first;
+                          final ds = _factory.findById(s.dataSourceId);
+                          if (ds != null) {
+                            _changeSymbolTo(ds.normalizeSymbol(s.symbol), ds);
+                          }
                         } else {
                           _changeSymbol();
                         }
@@ -1092,7 +1039,10 @@ class _StockPageState extends State<StockPage> {
                                       onTap: () {
                                         debounce?.cancel();
                                         Navigator.of(ctx).pop();
-                                        _changeSymbolTo(s.symbol);
+                                        final ds = _factory.findById(s.dataSourceId);
+                                        if (ds != null) {
+                                          _changeSymbolTo(ds.normalizeSymbol(s.symbol), ds);
+                                        }
                                       },
                                       child: Padding(
                                         padding: const EdgeInsets.symmetric(
@@ -1117,6 +1067,24 @@ class _StockPageState extends State<StockPage> {
                                                 ],
                                               ),
                                             ),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: s.dataSourceId == 'sina'
+                                                    ? const Color(0xFFE8783C).withValues(alpha: 0.2)
+                                                    : const Color(0xFF4DAA90).withValues(alpha: 0.2),
+                                                borderRadius: BorderRadius.circular(4),
+                                              ),
+                                              child: Text(
+                                                s.dataSourceId == 'sina' ? '新浪' : '东方财富',
+                                                style: TextStyle(
+                                                    color: s.dataSourceId == 'sina'
+                                                        ? const Color(0xFFE8783C)
+                                                        : const Color(0xFF4DAA90),
+                                                    fontSize: 11),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
                                             Text(
                                                 s.market == 'sh'
                                                     ? '沪A'
@@ -1148,7 +1116,11 @@ class _StockPageState extends State<StockPage> {
                     debounce?.cancel();
                     Navigator.of(ctx).pop();
                     if (suggestions.isNotEmpty) {
-                      _changeSymbolTo(suggestions.first.symbol);
+                      final s = suggestions.first;
+                      final ds = _factory.findById(s.dataSourceId);
+                      if (ds != null) {
+                        _changeSymbolTo(ds.normalizeSymbol(s.symbol), ds);
+                      }
                     } else {
                       _changeSymbol();
                     }

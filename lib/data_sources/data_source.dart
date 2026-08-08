@@ -4,14 +4,14 @@ import '../models/stock_quote.dart';
 
 /// Abstract data source interface for market data providers.
 ///
-/// Each provider (Sina, Finnhub, etc.) implements this interface so the UI
+/// Each provider (Sina, Eastmoney, etc.) implements this interface so the UI
 /// layer can be provider-agnostic. Adding a new provider only requires
 /// implementing this class and registering it in [DataSourceFactory].
 abstract class DataSource {
-  /// Unique identifier for the data source (e.g. 'sina', 'finnhub').
+  /// Unique identifier for the data source (e.g. 'sina', 'eastmoney').
   String get id;
 
-  /// Human-readable display name shown in the settings dropdown.
+  /// Human-readable display name shown in search results.
   String get displayName;
 
   /// Short description of the data source (market coverage, pricing).
@@ -26,7 +26,7 @@ abstract class DataSource {
   /// Validate an arbitrary user input and return the provider's native
   /// symbol format. Examples:
   ///   Sina: 'sh600519', 'sz000001', '600519' → 'sh600519'
-  ///   Finnhub: 'AAPL', '600519.SS', '000001.SZ'
+  ///   Eastmoney: 'sh600519', '600519' → '0.600519'
   String normalizeSymbol(String input);
 
   /// Fetch the latest real-time quote for [symbol].
@@ -44,4 +44,9 @@ abstract class DataSource {
     required int scale,
     int datalen = 300,
   });
+
+  /// Search for stocks matching [keyword] (code, name, or pinyin).
+  /// Results are tagged with this source's [id] via
+  /// [StockSearchResult.dataSourceId].
+  Future<List<StockSearchResult>> search(String keyword);
 }

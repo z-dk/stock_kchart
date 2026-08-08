@@ -87,65 +87,63 @@ class StockQuote {
     );
   }
 
-  @override
-  String toString() =>
-      'StockQuote($symbol $name current=$current change=$change)';
-
-  /// Parse a Finnhub quote response.
+  /// Parse an Eastmoney real-time quote response.
   ///
-  /// Finnhub returns a compact JSON object:
-  ///   {"c": price, "d": change, "dp": changePct,
-  ///    "h": high, "l": low, "o": open, "pc": prevClose, "t": unixTs}
-  ///
-  /// Volume and amount are not available in the quote response → set to 0.
-  /// Name/date/time are derived from the symbol and timestamp.
-  static StockQuote fromFinnhub(String symbol, Map<String, dynamic> json) {
-    final current = (json['c'] as num?)?.toDouble() ?? 0;
-    final change = (json['d'] as num?)?.toDouble() ?? 0;
-    final changePercent = (json['dp'] as num?)?.toDouble() ?? 0;
-    final high = (json['h'] as num?)?.toDouble() ?? 0;
-    final low = (json['l'] as num?)?.toDouble() ?? 0;
-    final open = (json['o'] as num?)?.toDouble() ?? 0;
-    final prevClose = (json['pc'] as num?)?.toDouble() ?? 0;
-    final timestamp = (json['t'] as num?)?.toInt() ?? 0;
+  /// Eastmoney returns field-coded JSON:
+  ///   f43=latest, f44=high, f45=low, f46=open, f47=volume, f48=amount,
+  ///   f57=code, f58=name, f60=prevClose, f169=change, f170=changePct
+  static StockQuote fromEastmoney(String symbol, Map<String, dynamic> json) {
+    final current = (json['f43'] as num?)?.toDouble() ?? 0;
+    final high = (json['f44'] as num?)?.toDouble() ?? 0;
+    final low = (json['f45'] as num?)?.toDouble() ?? 0;
+    final open = (json['f46'] as num?)?.toDouble() ?? 0;
+    final volume = (json['f47'] as num?)?.toDouble() ?? 0;
+    final amount = (json['f48'] as num?)?.toDouble() ?? 0;
+    final name = (json['f58'] ?? '').toString();
+    final prevClose = (json['f60'] as num?)?.toDouble() ?? 0;
+    final change = (json['f169'] as num?)?.toDouble() ?? 0;
+    final changePercent = (json['f170'] as num?)?.toDouble() ?? 0;
 
-    final dt = timestamp > 0
-        ? DateTime.fromMillisecondsSinceEpoch(timestamp * 1000)
-        : DateTime.now();
+    final now = DateTime.now();
     final date =
-        '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
     final time =
-        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
 
     return StockQuote(
       symbol: symbol,
-      name: symbol, // Finnhub does not return company name
+      name: name,
       open: open,
       prevClose: prevClose,
       current: current,
       high: high,
       low: low,
-      volume: 0, // Not available in Finnhub quote
-      amount: 0,
+      volume: volume,
+      amount: amount,
       date: date,
       time: time,
       overrideChange: change,
       overrideChangePercent: changePercent,
     );
   }
+
+  @override
+  String toString() =>
+      'StockQuote($symbol $name current=$current change=$change)';
 }
 
-/// A stock search suggestion returned by the Eastmoney suggest API.
+/// A stock search suggestion returned by data source search APIs.
 ///
 /// Each result carries the 6-digit [code], Chinese [name], pinyin initials
-/// [pinyin], and the exchange [market] (`sh`/`sz`). The Sina-style [symbol]
-/// (e.g. `sh600519`) is derived for direct use with the active data source.
+/// [pinyin], the exchange [market] (`sh`/`sz`), and the [dataSourceId]
+/// identifying which provider returned this result.
 class StockSearchResult {
   StockSearchResult({
     required this.code,
     required this.name,
     required this.pinyin,
     required this.market,
+    required this.dataSourceId,
   });
 
   /// 6-digit stock code, e.g. `600519`.
@@ -160,12 +158,16 @@ class StockSearchResult {
   /// Exchange prefix: `sh` (Shanghai) or `sz` (Shenzhen).
   final String market;
 
+  /// Which data source returned this result (e.g. 'sina', 'eastmoney').
+  final String dataSourceId;
+
   /// Full Sina-style symbol, e.g. `sh600519`.
   String get symbol => '$market$code';
 
   /// Parse from Eastmoney suggest API item.
   /// `MktNum`: `1` → Shanghai (sh), `0` → Shenzhen (sz).
-  factory StockSearchResult.fromEastmoney(Map<String, dynamic> json) {
+  factory StockSearchResult.fromEastmoney(Map<String, dynamic> json,
+      {String dataSourceId = 'eastmoney'}) {
     final code = (json['Code'] ?? '').toString();
     final name = (json['Name'] ?? '').toString();
     final pinyin = (json['PinYin'] ?? '').toString();
@@ -176,9 +178,38 @@ class StockSearchResult {
       name: name,
       pinyin: pinyin,
       market: market,
+      dataSourceId: dataSourceId,
+    );
+  }
+
+  /// Parse from Sina suggest API response item.
+  /// Item format: `名称,类型,代码,完整代码,名称`
+  /// Type 11=沪A, 12=深A.
+  factory StockSearchResult.fromSina(String item,
+      {String dataSourceId = 'sina'}) {
+    final parts = item.split(',');
+    if (parts.length < 4) {
+      return StockSearchResult(
+        code: '',
+        name: '',
+        pinyin: '',
+        market: 'sh',
+        dataSourceId: dataSourceId,
+      );
+    }
+    final name = parts[0];
+    final code = parts[2];
+    final fullCode = parts[3]; // e.g. sh600519
+    final market = fullCode.startsWith('sh') ? 'sh' : 'sz';
+    return StockSearchResult(
+      code: code,
+      name: name,
+      pinyin: '',
+      market: market,
+      dataSourceId: dataSourceId,
     );
   }
 
   @override
-  String toString() => 'StockSearchResult($symbol $name)';
+  String toString() => 'StockSearchResult($symbol $name [$dataSourceId])';
 }
