@@ -4,11 +4,11 @@ import '../models/stock_quote.dart';
 
 /// Abstract data source interface for market data providers.
 ///
-/// Each provider (Sina, Eastmoney, etc.) implements this interface so the UI
-/// layer can be provider-agnostic. Adding a new provider only requires
+/// Each provider (Eastmoney, Binance, etc.) implements this interface so the
+/// UI layer can be provider-agnostic. Adding a new provider only requires
 /// implementing this class and registering it in [DataSourceFactory].
 abstract class DataSource {
-  /// Unique identifier for the data source (e.g. 'sina', 'eastmoney').
+  /// Unique identifier for the data source (e.g. 'eastmoney', 'binance').
   String get id;
 
   /// Human-readable display name shown in search results.
@@ -25,8 +25,8 @@ abstract class DataSource {
 
   /// Validate an arbitrary user input and return the provider's native
   /// symbol format. Examples:
-  ///   Sina: 'sh600519', 'sz000001', '600519' → 'sh600519'
-  ///   Eastmoney: 'sh600519', '600519' → '0.600519'
+  ///   Eastmoney: 'sh600519', '600519' → '1.600519' (secid)
+  ///   Binance:   'btc' → 'BTCUSDT'
   String normalizeSymbol(String input);
 
   /// Fetch the latest real-time quote for [symbol].

@@ -1,52 +1,67 @@
-// Unit tests for the pure (network-free) parts of the Sina integration.
+// Unit tests for the pure (network-free) parts of the Eastmoney integration.
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:stock_kchart/data_sources/eastmoney_data_source.dart';
 import 'package:stock_kchart/models/stock_quote.dart';
-import 'package:stock_kchart/services/sina_api_service.dart';
 
 void main() {
-  group('StockQuote.fromSina', () {
-    test('parses a well-formed realtime line', () {
-      // Full 33-field Sina response (name, OHLC, bid/ask, vol, amount,
-      // 5-level bid×ask vol/price pairs, date, time, status).
-      const line = 'var hq_str_sh600519="贵州茅台,1310.000,1306.450,1308.550,'
-          '1314.400,1300.010,1308.550,1308.580,2546328,3326230801.000,'
-          '7983,1308.550,7983,1308.580,7983,1308.590,7983,1308.600,7983,'
-          '1308.610,7983,1308.620,7983,1308.630,7983,1308.640,7983,'
-          '1308.650,7983,1308.660,2026-08-06,15:00:00,00";';
-      final q = StockQuote.fromSina('sh600519', line);
+  group('StockQuote.fromEastmoney', () {
+    test('parses a well-formed realtime quote response', () {
+      // Mirrors the Eastmoney push2 stock/get JSON (field codes).
+      const json = <String, dynamic>{
+        'f43': 1308.55, // latest
+        'f44': 1314.40, // high
+        'f45': 1300.01, // low
+        'f46': 1310.00, // open
+        'f47': 2546328, // volume
+        'f48': 3326230801.0, // amount
+        'f57': '600519',
+        'f58': '贵州茅台',
+        'f60': 1306.45, // prevClose
+        'f169': 2.10, // change
+        'f170': 0.16, // changePct
+      };
+      final q = StockQuote.fromEastmoney('1.600519', json);
       expect(q, isNotNull);
-      expect(q!.name, '贵州茅台');
-      expect(q.open, 1310.000);
-      expect(q.prevClose, 1306.450);
-      expect(q.current, 1308.550);
-      expect(q.high, 1314.400);
-      expect(q.low, 1300.010);
+      expect(q.name, '贵州茅台');
+      expect(q.current, 1308.55);
+      expect(q.open, 1310.00);
+      expect(q.high, 1314.40);
+      expect(q.low, 1300.01);
+      expect(q.prevClose, 1306.45);
       expect(q.volume, 2546328);
-      expect(q.amount, 3326230801.000);
-      expect(q.date, '2026-08-06');
-      expect(q.time, '15:00:00');
-      expect(q.change, closeTo(2.10, 0.001));
+      expect(q.amount, 3326230801.0);
+      expect(q.change, 2.10);
+      expect(q.changePercent, 0.16);
       expect(q.isUp, isTrue);
     });
 
-    test('returns null for an empty (suspended) response', () {
-      const empty = 'var hq_str_sh000001="";';
-      expect(StockQuote.fromSina('sh000001', empty), isNull);
+    test('handles missing fields gracefully (all zeros)', () {
+      final q = StockQuote.fromEastmoney('1.600519', <String, dynamic>{});
+      expect(q.current, 0);
+      expect(q.name, '');
     });
   });
 
-  group('SinaApiService.normalizeSymbol', () {
+  group('EastmoneyDataSource.normalizeSymbol', () {
+    final ds = EastmoneyDataSource.instance;
+
     test('auto-prefixes Shanghai and Shenzhen codes', () {
-      expect(SinaApiService.normalizeSymbol('600519'), 'sh600519');
-      expect(SinaApiService.normalizeSymbol('000001'), 'sz000001');
-      expect(SinaApiService.normalizeSymbol('300750'), 'sz300750');
-      expect(SinaApiService.normalizeSymbol('688981'), 'sh688981');
+      expect(ds.normalizeSymbol('600519'), '1.600519'); // SH
+      expect(ds.normalizeSymbol('000001'), '0.000001'); // SZ
+      expect(ds.normalizeSymbol('300750'), '0.300750'); // SZ ChiNext
+      expect(ds.normalizeSymbol('688981'), '1.688981'); // SH STAR
     });
 
-    test('preserves an explicit prefix and trims/case-folds', () {
-      expect(SinaApiService.normalizeSymbol('  SH600519 '), 'sh600519');
-      expect(SinaApiService.normalizeSymbol('sz000001'), 'sz000001');
+    test('passes through an explicit secid verbatim (case-sensitive)', () {
+      expect(ds.normalizeSymbol('1.600519'), '1.600519');
+      expect(ds.normalizeSymbol('116.00700'), '116.00700');
+      expect(ds.normalizeSymbol('105.AAPL'), '105.AAPL'); // US case preserved
+    });
+
+    test('converts sh/sz-prefixed symbols to secid', () {
+      expect(ds.normalizeSymbol('sh600519'), '1.600519');
+      expect(ds.normalizeSymbol('SZ000001'), '0.000001');
     });
   });
 }

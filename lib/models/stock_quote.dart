@@ -1,16 +1,7 @@
-/// Real-time quote for a single A-share symbol, parsed from Sina Finance's
-/// `hq.sinajs.cn` text response.
+/// Real-time quote for a single instrument (A-share, HK, US, crypto).
 ///
-/// Sina returns a line like:
-///   var hq_str_sh600519="贵州茅台,1310.000,1306.450,1308.550,1314.400,
-///   1300.010,1308.550,1308.580,2546328,3326230801.000,7983,1308.550,
-///   ...(5档买卖)...,2026-08-06,15:00:00,00";
-///
-/// The fields (comma separated, 0-indexed):
-///   0  name          1  todayOpen      2  prevClose       3  current
-///   4  high          5  low            6  bidPrice        7  askPrice
-///   8  volume(shares) 9 amount(yuan)   10..29 买一..买五(量,价)
-///   30 date          31 time          32 status
+/// Parsed from each data source's real-time response via a dedicated
+/// `fromXxx` factory ([StockQuote.fromEastmoney], [StockQuote.fromBinance]).
 class StockQuote {
   StockQuote({
     required this.symbol,
@@ -50,42 +41,6 @@ class StockQuote {
       (prevClose == 0 ? 0 : (current - prevClose) / prevClose * 100);
 
   bool get isUp => current >= prevClose;
-
-  /// Parse a single `var hq_str_<symbol>="...";` line.
-  /// Returns `null` if the line is empty or malformed (e.g. suspended symbol).
-  static StockQuote? fromSina(String symbol, String text) {
-    final eq = text.indexOf('=');
-    if (eq < 0) return null;
-
-    var payload = text.substring(eq + 1).trim();
-    if (payload.startsWith('"')) payload = payload.substring(1);
-    if (payload.endsWith('";')) {
-      payload = payload.substring(0, payload.length - 2);
-    } else if (payload.endsWith('"')) {
-      payload = payload.substring(0, payload.length - 1);
-    }
-    payload = payload.trim();
-    if (payload.isEmpty) return null;
-
-    final parts = payload.split(',');
-    if (parts.length < 32) return null;
-
-    double num(int i) => double.tryParse(parts[i].trim()) ?? 0;
-
-    return StockQuote(
-      symbol: symbol,
-      name: parts[0].trim(),
-      open: num(1),
-      prevClose: num(2),
-      current: num(3),
-      high: num(4),
-      low: num(5),
-      volume: num(8),
-      amount: num(9),
-      date: parts[30].trim(),
-      time: parts[31].trim(),
-    );
-  }
 
   /// Parse an Eastmoney real-time quote response.
   ///
@@ -177,12 +132,12 @@ class StockQuote {
       'StockQuote($symbol $name current=$current change=$change)';
 }
 
-/// A stock search suggestion returned by data source search APIs.
+/// A search suggestion returned by data source search APIs.
 ///
-/// Each result carries the stock [code], [name], pinyin initials [pinyin],
-/// the [market] tag (`sh`/`sz`/`hk`/`us`), the [dataSourceId] identifying
-/// which provider returned it, and [symbol] — the loadable identifier for
-/// that provider.
+/// Each result carries the [code], [name], pinyin initials [pinyin],
+/// the [market] tag (`sh`/`sz`/`hk`/`us`/`crypto`), the [dataSourceId]
+/// identifying which provider returned it, and [symbol] — the loadable
+/// identifier for that provider.
 class StockSearchResult {
   StockSearchResult({
     required this.code,
@@ -202,15 +157,15 @@ class StockSearchResult {
   /// Pinyin initials, e.g. `GZMT`.
   final String pinyin;
 
-  /// Market tag for UI: `sh`/`sz` (A-share), `hk` (HK), `us` (US).
+  /// Market tag for UI: `sh`/`sz` (A-share), `hk` (HK), `us` (US), `crypto`.
   final String market;
 
-  /// Which data source returned this result (e.g. 'sina', 'eastmoney').
+  /// Which data source returned this result (e.g. 'eastmoney', 'binance').
   final String dataSourceId;
 
-  /// Loadable identifier for this result's data source. For Sina this is the
-  /// `sh/sz`-prefixed symbol (e.g. `sh600519`); for Eastmoney it is the full
-  /// `secid` from the API (e.g. `1.600519`, `116.00700`, `105.AAPL`).
+  /// Loadable identifier for this result's data source. For Eastmoney it is
+  /// the full `secid` from the API (e.g. `1.600519`, `116.00700`, `105.AAPL`);
+  /// for Binance it is the trading-pair symbol (e.g. `BTCUSDT`).
   final String symbol;
 
   /// Parse from Eastmoney suggest API item.
@@ -268,36 +223,6 @@ class StockSearchResult {
       market: 'crypto',
       dataSourceId: dataSourceId,
       symbol: symbol,
-    );
-  }
-
-  /// Parse from Sina suggest API response item.
-  /// Item format: `名称,类型,代码,完整代码,名称`
-  /// Type 11=沪A, 12=深A.
-  factory StockSearchResult.fromSina(String item,
-      {String dataSourceId = 'sina'}) {
-    final parts = item.split(',');
-    if (parts.length < 4) {
-      return StockSearchResult(
-        code: '',
-        name: '',
-        pinyin: '',
-        market: 'sh',
-        dataSourceId: dataSourceId,
-        symbol: '',
-      );
-    }
-    final name = parts[0];
-    final code = parts[2];
-    final fullCode = parts[3]; // e.g. sh600519
-    final market = fullCode.startsWith('sh') ? 'sh' : 'sz';
-    return StockSearchResult(
-      code: code,
-      name: name,
-      pinyin: '',
-      market: market,
-      dataSourceId: dataSourceId,
-      symbol: fullCode,
     );
   }
 

@@ -7,12 +7,15 @@ import 'package:k_chart/flutter_k_chart.dart';
 
 import '../data_sources/data_source.dart';
 import '../data_sources/data_source_factory.dart';
-import '../data_sources/sina_data_source.dart';
+import '../data_sources/eastmoney_data_source.dart';
+import '../models/favorite_item.dart';
 import '../models/stock_quote.dart';
+import '../services/favorite_service.dart';
 import '../services/stock_search_service.dart';
 
-/// A selectable K-line period. [scale] is the candle length in minutes
-/// (Sina's `scale` parameter): 5/15/30/60 intraday, 240 daily.
+/// A selectable K-line period. [scale] is the candle length in minutes:
+/// 5/15/30/60 intraday, 240 daily. Each data source maps this to its own
+/// interval code (Eastmoney klt, Binance interval string).
 class _Period {
   const _Period(this.label, this.scale);
   final String label;
@@ -88,6 +91,15 @@ class _StockPageState extends State<StockPage> {
 
   Timer? _timer;
 
+  /// Whether the currently-loaded symbol is in the user's favorites.
+  /// Refreshed whenever the symbol or data source changes.
+  bool _isFavorite = false;
+
+  /// Cached favorites grouped by market, shown in the drawer. Reloaded each
+  /// time the drawer is opened so it reflects the latest additions.
+  Map<String, List<FavoriteItem>> _favoriteGroups = <String, List<FavoriteItem>>{};
+  bool _favoritesLoading = false;
+
   @override
   void initState() {
     super.initState();
@@ -155,7 +167,7 @@ class _StockPageState extends State<StockPage> {
   Future<void> _initDataSource() async {
     if (mounted) {
       setState(() {
-        _dataSource = SinaDataSource.instance;
+        _dataSource = EastmoneyDataSource.instance;
       });
       _loadAll();
     }
@@ -212,6 +224,8 @@ class _StockPageState extends State<StockPage> {
     // Once the first chart load completes, surface a brief hint telling the
     // user that gestures (pinch-zoom, pan, long-press select) are available.
     _scheduleZoomHintDismissal();
+    // Reflect the favorite state for the newly-loaded symbol.
+    _refreshFavoriteStatus();
   }
 
   void _startPolling() {
@@ -302,6 +316,94 @@ class _StockPageState extends State<StockPage> {
     _loadAll();
   }
 
+  /// Look up whether the currently-loaded symbol is favorited and update
+  /// [_isFavorite] so the star button reflects the current state.
+  Future<void> _refreshFavoriteStatus() async {
+    final ds = _dataSource;
+    if (ds == null || _symbol.isEmpty) {
+      if (mounted) setState(() => _isFavorite = false);
+      return;
+    }
+    final fav = await FavoriteService.instance.isFavorite(_symbol, ds.id);
+    if (mounted) setState(() => _isFavorite = fav);
+  }
+
+  /// Toggle the current symbol in/out of favorites. The display name comes
+  /// from the loaded quote when available (so e.g. 比特币 is stored rather
+  /// than BTCUSDT); otherwise the symbol itself is used.
+  Future<void> _toggleFavorite() async {
+    final ds = _dataSource;
+    if (ds == null || _symbol.isEmpty) return;
+    final quote = _quote;
+    final item = FavoriteItem.fromSearchResult(
+      symbol: _symbol,
+      name: quote?.name.isNotEmpty == true ? quote!.name : _symbol,
+      code: _displayCode,
+      market: _currentMarket,
+      dataSourceId: ds.id,
+    );
+    final nowFav = await FavoriteService.instance.toggle(item);
+    if (mounted) {
+      setState(() => _isFavorite = nowFav);
+      // Refresh the drawer's cached groups so the change is visible next open.
+      await _loadFavorites();
+    }
+  }
+
+  /// Derive a UI market tag from the active data source / symbol. Eastmoney
+  /// encodes the market in the secid prefix (1=sh, 0=sz, 116=hk, 105=us);
+  /// Binance is always crypto.
+  String get _currentMarket {
+    final ds = _dataSource;
+    if (ds == null) return 'sh';
+    if (ds.id == 'binance') return 'crypto';
+    // Eastmoney secid: `<market>.<code>`
+    final parts = _symbol.split('.');
+    if (parts.length == 2) {
+      switch (parts[0]) {
+        case '1':
+          return 'sh';
+        case '0':
+          return 'sz';
+        case '116':
+          return 'hk';
+        case '105':
+          return 'us';
+      }
+    }
+    return 'sh';
+  }
+
+  /// Short code for the favorite list (e.g. `600519`, `BTC`, `AAPL`).
+  String get _displayCode {
+    final ds = _dataSource;
+    if (ds == null) return _symbol;
+    if (ds.id == 'binance') {
+      // BTCUSDT → BTC (strip the USDT suffix).
+      final s = _symbol.toUpperCase();
+      return s.endsWith('USDT') ? s.substring(0, s.length - 4) : s;
+    }
+    // Eastmoney secid `<market>.<code>` → `<code>`.
+    final parts = _symbol.split('.');
+    return parts.length == 2 ? parts[1] : _symbol;
+  }
+
+  /// Load favorites grouped by market for drawer display.
+  Future<void> _loadFavorites() async {
+    if (mounted) setState(() => _favoritesLoading = true);
+    try {
+      final groups = await FavoriteService.instance.groupedByMarket();
+      if (mounted) {
+        setState(() {
+          _favoriteGroups = groups;
+          _favoritesLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _favoritesLoading = false);
+    }
+  }
+
   bool get _isIntraday => _scale < 240;
 
   @override
@@ -384,6 +486,12 @@ class _StockPageState extends State<StockPage> {
         ),
         title: title,
         actions: <Widget>[
+          IconButton(
+            icon: Icon(_isFavorite ? Icons.star : Icons.star_border),
+            tooltip: _isFavorite ? '取消收藏' : '收藏',
+            color: _isFavorite ? const Color(0xFFF0B90B) : null,
+            onPressed: _toggleFavorite,
+          ),
           IconButton(
             icon: const Icon(Icons.search),
             tooltip: '切换股票',
@@ -1043,6 +1151,11 @@ class _StockPageState extends State<StockPage> {
   // ─────────────────────────── Drawer ────────────────────────────────────
 
   Widget _buildDrawer() {
+    // Lazily load favorites the first time the drawer is built so the list
+    // reflects the latest state without forcing a load on every build.
+    if (_favoriteGroups.isEmpty && !_favoritesLoading) {
+      _loadFavorites();
+    }
     return Drawer(
       backgroundColor: const Color(0xFF1A1D25),
       child: ListView(
@@ -1066,12 +1179,14 @@ class _StockPageState extends State<StockPage> {
                 ),
                 const SizedBox(height: 4),
                 const Text(
-                    '多数据源 A 股看盘',
+                    '多数据源行情看盘',
                     style: TextStyle(color: Color(0xFF60738E), fontSize: 12),
                   ),
               ],
             ),
           ),
+          _buildFavoritesSection(),
+          const Divider(color: Color(0xFF2A2D34), height: 1),
           ListTile(
             leading: const Icon(Icons.info_outline, color: Color(0xFF9AA5B1)),
             title: const Text('关于', style: TextStyle(color: Colors.white)),
@@ -1085,6 +1200,182 @@ class _StockPageState extends State<StockPage> {
     );
   }
 
+  /// The favorites section in the drawer: a header row plus the grouped list.
+  Widget _buildFavoritesSection() {
+    final groups = _favoriteGroups;
+    final total = groups.values.fold<int>(0, (int s, List<FavoriteItem> l) => s + l.length);
+
+    return ExpansionTile(
+      initiallyExpanded: true,
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+      collapsedIconColor: const Color(0xFF9AA5B1),
+      iconColor: const Color(0xFF9AA5B1),
+      title: Row(
+        children: <Widget>[
+          const Icon(Icons.star_rounded, color: Color(0xFFF0B90B), size: 20),
+          const SizedBox(width: 12),
+          const Text('我的收藏', style: TextStyle(color: Colors.white, fontSize: 15)),
+          const SizedBox(width: 8),
+          if (total > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0B90B).withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$total',
+                style: const TextStyle(color: Color(0xFFF0B90B), fontSize: 11),
+              ),
+            ),
+        ],
+      ),
+      children: <Widget>[
+        if (_favoritesLoading)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4C86CD)),
+            ),
+          )
+        else if (total == 0)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+            child: Text(
+              '还没有收藏。\n点击右上角星标收藏当前品种。',
+              style: TextStyle(color: Color(0xFF60738E), fontSize: 12, height: 1.5),
+            ),
+          )
+        else
+          for (final entry in groups.entries)
+            _buildMarketGroup(entry.key, entry.value),
+      ],
+    );
+  }
+
+  /// A single market group inside the favorites section.
+  Widget _buildMarketGroup(String market, List<FavoriteItem> items) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 16, 4),
+          child: Text(
+            _marketLabel(market),
+            style: const TextStyle(color: Color(0xFF60738E), fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ),
+        for (final item in items) _buildFavoriteTile(item),
+        const SizedBox(height: 4),
+      ],
+    );
+  }
+
+  /// A single favorite row: tap to load, long-press to remove.
+  Widget _buildFavoriteTile(FavoriteItem item) {
+    final isActive =
+        _dataSource?.id == item.dataSourceId && _symbol == item.symbol;
+    return InkWell(
+      onTap: () {
+        final ds = _factory.findById(item.dataSourceId);
+        if (ds == null) return;
+        Navigator.pop(context); // close drawer
+        _changeSymbolTo(item.symbol, ds);
+      },
+      onLongPress: () => _confirmRemoveFavorite(item),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        color: isActive ? const Color(0xFF4C86CD).withValues(alpha: 0.12) : null,
+        child: Row(
+          children: <Widget>[
+            Container(
+              width: 4,
+              height: 4,
+              decoration: BoxDecoration(
+                color: _sourceBadgeColor(item.dataSourceId),
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(item.name,
+                      style: TextStyle(
+                          color: isActive ? const Color(0xFF4C86CD) : Colors.white,
+                          fontSize: 14)),
+                  const SizedBox(height: 2),
+                  Text(item.code.toUpperCase(),
+                      style: const TextStyle(color: Color(0xFF60738E), fontSize: 11)),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: _sourceBadgeColor(item.dataSourceId).withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                _sourceBadgeLabel(item.dataSourceId),
+                style: TextStyle(color: _sourceBadgeColor(item.dataSourceId), fontSize: 10),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Confirm-before-remove dialog for long-pressed favorites.
+  Future<void> _confirmRemoveFavorite(FavoriteItem item) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF23262D),
+        title: const Text('取消收藏', style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: Text('从收藏中移除「${item.name}」？',
+            style: const TextStyle(color: Color(0xFF9AA5B1), fontSize: 13)),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消', style: TextStyle(color: Color(0xFF60738E))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('移除', style: TextStyle(color: Color(0xFFC15466))),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await FavoriteService.instance.remove(item.symbol, item.dataSourceId);
+      await _loadFavorites();
+      await _refreshFavoriteStatus();
+    }
+  }
+
+  /// Map a market tag to a short Chinese label for the favorites group header.
+  static String _marketLabel(String market) {
+    switch (market) {
+      case 'sh':
+        return '沪 A';
+      case 'sz':
+        return '深 A';
+      case 'hk':
+        return '港股';
+      case 'us':
+        return '美股';
+      case 'crypto':
+        return '加密货币';
+      default:
+        return market.toUpperCase();
+    }
+  }
+
   void _showAbout() {
     showAboutDialog(
       context: context,
@@ -1093,9 +1384,9 @@ class _StockPageState extends State<StockPage> {
       applicationIcon: const Icon(Icons.show_chart),
       children: const <Widget>[
         SizedBox(height: 16),
-        Text('基于 Flutter + k_chart 构建的多数据源股票看盘应用。'),
+        Text('基于 Flutter + k_chart 构建的多数据源行情看盘应用。'),
         SizedBox(height: 8),
-        Text('支持数据源：新浪财经、东方财富'),
+        Text('支持数据源：东方财富、币安'),
       ],
     );
   }
@@ -1339,8 +1630,6 @@ class _StockPageState extends State<StockPage> {
   /// Badge color for a data-source id, shown in the search dropdown.
   static Color _sourceBadgeColor(String id) {
     switch (id) {
-      case 'sina':
-        return const Color(0xFFE8783C);
       case 'eastmoney':
         return const Color(0xFF4DAA90);
       case 'binance':
@@ -1353,8 +1642,6 @@ class _StockPageState extends State<StockPage> {
   /// Badge label text for a data-source id, shown in the search dropdown.
   static String _sourceBadgeLabel(String id) {
     switch (id) {
-      case 'sina':
-        return '新浪';
       case 'eastmoney':
         return '东方财富';
       case 'binance':
