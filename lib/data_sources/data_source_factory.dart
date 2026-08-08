@@ -1,5 +1,4 @@
 import 'data_source.dart';
-import 'sina_data_source.dart';
 import 'eastmoney_data_source.dart';
 import 'binance_data_source.dart';
 
@@ -14,7 +13,6 @@ class DataSourceFactory {
   static final DataSourceFactory instance = DataSourceFactory._();
 
   final List<DataSource> _providers = <DataSource>[
-    SinaDataSource.instance,
     EastmoneyDataSource.instance,
     BinanceDataSource.instance,
   ];

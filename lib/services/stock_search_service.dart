@@ -1,12 +1,12 @@
 import '../models/stock_quote.dart';
 import '../data_sources/data_source_factory.dart';
 
-/// Searches A-share stocks across all registered data sources.
+/// Searches instruments across all registered data sources.
 ///
 /// Each registered [DataSource] contributes its own [search] results,
 /// tagged with the source's [id] via [StockSearchResult.dataSourceId].
-/// Results are aggregated in registration order (Sina first, then
-/// Eastmoney, etc.) so the UI can display a per-source label for the
+/// Results are aggregated in registration order (Eastmoney first, then
+/// Binance, etc.) so the UI can display a per-source label for the
 /// user to choose from.
 class StockSearchService {
   StockSearchService._();
