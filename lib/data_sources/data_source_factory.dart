@@ -1,6 +1,7 @@
 import 'data_source.dart';
 import 'sina_data_source.dart';
 import 'eastmoney_data_source.dart';
+import 'binance_data_source.dart';
 
 /// Factory that provides access to all registered [DataSource]s.
 ///
@@ -15,6 +16,7 @@ class DataSourceFactory {
   final List<DataSource> _providers = <DataSource>[
     SinaDataSource.instance,
     EastmoneyDataSource.instance,
+    BinanceDataSource.instance,
   ];
 
   /// Returns the list of all available data sources.

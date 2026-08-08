@@ -127,6 +127,51 @@ class StockQuote {
     );
   }
 
+  /// Parse a Binance 24hr ticker response.
+  ///
+  /// Binance returns JSON with stringified numbers:
+  ///   lastPrice, priceChange, priceChangePercent, openPrice, highPrice,
+  ///   lowPrice, volume (base asset), quoteVolume (USDT amount).
+  static StockQuote fromBinance(String symbol, Map<String, dynamic> json) {
+    final current = double.tryParse('${json['lastPrice']}') ?? 0;
+    final open = double.tryParse('${json['openPrice']}') ?? 0;
+    final high = double.tryParse('${json['highPrice']}') ?? 0;
+    final low = double.tryParse('${json['lowPrice']}') ?? 0;
+    final volume = double.tryParse('${json['volume']}') ?? 0;
+    final amount = double.tryParse('${json['quoteVolume']}') ?? 0;
+    final change = double.tryParse('${json['priceChange']}') ?? 0;
+    final changePercent =
+        double.tryParse('${json['priceChangePercent']}') ?? 0;
+    // prevClose ≈ lastPrice − priceChange (Binance doesn't return it
+    // directly; this matches the 24h window semantics).
+    final prevClose = current - change;
+
+    final closeTime = (json['closeTime'] as num?)?.toInt();
+    final dt = closeTime != null
+        ? DateTime.fromMillisecondsSinceEpoch(closeTime)
+        : DateTime.now();
+    final date =
+        '${dt.year.toString().padLeft(4, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+    final time =
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}';
+
+    return StockQuote(
+      symbol: symbol,
+      name: symbol,
+      open: open,
+      prevClose: prevClose,
+      current: current,
+      high: high,
+      low: low,
+      volume: volume,
+      amount: amount,
+      date: date,
+      time: time,
+      overrideChange: change,
+      overrideChangePercent: changePercent,
+    );
+  }
+
   @override
   String toString() =>
       'StockQuote($symbol $name current=$current change=$change)';
@@ -199,6 +244,30 @@ class StockSearchResult {
       market: market,
       dataSourceId: dataSourceId,
       symbol: quoteId,
+    );
+  }
+
+  /// Parse from a Binance exchangeInfo symbol entry.
+  ///
+  /// Binance has no suggest API, so search is done by locally filtering the
+  /// cached exchangeInfo symbol list. [symbol] is the full trading-pair code
+  /// (e.g. `BTCUSDT`), [baseAsset] is the coin code (e.g. `BTC`), [zhName] is
+  /// an optional localized name (e.g. `比特币`), and [pinyin] is optional
+  /// pinyin initials for Chinese-name matching.
+  factory StockSearchResult.fromBinance({
+    required String symbol,
+    required String baseAsset,
+    String zhName = '',
+    String pinyin = '',
+    String dataSourceId = 'binance',
+  }) {
+    return StockSearchResult(
+      code: baseAsset,
+      name: zhName.isNotEmpty ? zhName : baseAsset,
+      pinyin: pinyin,
+      market: 'crypto',
+      dataSourceId: dataSourceId,
+      symbol: symbol,
     );
   }
 
