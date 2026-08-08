@@ -291,10 +291,9 @@ packages:
   k_chart:
     dependency: "direct main"
     description:
-      name: k_chart
-      sha256: "059163563285cc001dc0257880f598774c63791155a7e0f3a37064dda89c9168"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/k_chart"
+      relative: true
+    source: path
     version: "0.7.1"
   leak_tracker:
     dependency: transitive

@@ -97,3 +97,7 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# Vendored k_chart: only ship lib/ + pubspec + license, not its example app
+# (the example brings in iOS/macOS/Windows/Linux platform files & icons).
+packages/k_chart/example/
