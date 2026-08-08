@@ -7,6 +7,7 @@ import 'package:k_chart/flutter_k_chart.dart';
 import '../data_sources/data_source.dart';
 import '../data_sources/data_source_factory.dart';
 import '../models/stock_quote.dart';
+import '../services/stock_search_service.dart';
 import 'settings_page.dart';
 
 /// A selectable K-line period. [scale] is the candle length in minutes
@@ -215,6 +216,21 @@ class _StockPageState extends State<StockPage> {
     if (normalized.isEmpty || normalized == _symbol) return;
     _symbolController.text = normalized;
     _symbol = normalized;
+    FocusScope.of(context).unfocus();
+    _loadAll();
+  }
+
+  /// Switch to a symbol chosen from the search dropdown.
+  ///
+  /// Unlike [_changeSymbol], the [symbol] comes straight from a search result
+  /// and is already in the provider's native format, so no normalization is
+  /// needed. This is the key path that avoids loading failures caused by
+  /// invalid user input — the chart only loads a verified symbol.
+  void _changeSymbolTo(String symbol) {
+    if (_dataSource == null) return;
+    if (symbol.isEmpty || symbol == _symbol) return;
+    _symbolController.text = symbol;
+    _symbol = symbol;
     FocusScope.of(context).unfocus();
     _loadAll();
   }
@@ -970,50 +986,185 @@ class _StockPageState extends State<StockPage> {
   // ─────────────────────────── Symbol dialog ─────────────────────────────
 
   Future<void> _showSymbolDialog() async {
+    _symbolController.clear();
+    List<StockSearchResult> suggestions = <StockSearchResult>[];
+    bool searching = false;
+    Timer? debounce;
+
     await showDialog<void>(
       context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF23262D),
-          title: const Text('输入股票代码',
-              style: TextStyle(color: Colors.white, fontSize: 16)),
-          content: TextField(
-            controller: _symbolController,
-            autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(
-              hintText: '如 600519 / sh600519 / 000001',
-              hintStyle: TextStyle(color: Color(0xFF60738E)),
-              enabledBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF4C86CD)),
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (BuildContext ctx, StateSetter setState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF23262D),
+              title: const Text('搜索股票',
+                  style: TextStyle(color: Colors.white, fontSize: 16)),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    TextField(
+                      controller: _symbolController,
+                      autofocus: true,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        hintText: '代码 / 名称 / 拼音首字母',
+                        hintStyle: TextStyle(color: Color(0xFF60738E)),
+                        prefixIcon: Icon(Icons.search,
+                            color: Color(0xFF60738E), size: 20),
+                        isDense: true,
+                        enabledBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Color(0xFF4C86CD)),
+                        ),
+                        focusedBorder: UnderlineInputBorder(
+                          borderSide: BorderSide(color: Color(0xFF4C86CD)),
+                        ),
+                      ),
+                      onChanged: (value) {
+                        debounce?.cancel();
+                        if (value.trim().isEmpty) {
+                          setState(() {
+                            suggestions = <StockSearchResult>[];
+                            searching = false;
+                          });
+                          return;
+                        }
+                        setState(() => searching = true);
+                        debounce = Timer(
+                          const Duration(milliseconds: 300),
+                          () async {
+                            final results =
+                                await StockSearchService.instance.search(value);
+                            if (ctx.mounted) {
+                              setState(() {
+                                suggestions = results;
+                                searching = false;
+                              });
+                            }
+                          },
+                        );
+                      },
+                      onSubmitted: (_) {
+                        debounce?.cancel();
+                        Navigator.of(ctx).pop();
+                        if (suggestions.isNotEmpty) {
+                          _changeSymbolTo(suggestions.first.symbol);
+                        } else {
+                          _changeSymbol();
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: searching
+                          ? const Padding(
+                              padding: EdgeInsets.all(20),
+                              child: Center(
+                                child: SizedBox(
+                                  width: 22,
+                                  height: 22,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Color(0xFF4C86CD)),
+                                ),
+                              ),
+                            )
+                          : suggestions.isEmpty
+                              ? Padding(
+                                  padding: const EdgeInsets.all(20),
+                                  child: Text(
+                                    _symbolController.text.trim().isEmpty
+                                        ? '输入代码 / 名称 / 拼音搜索'
+                                        : '无匹配结果',
+                                    style: const TextStyle(
+                                        color: Color(0xFF60738E),
+                                        fontSize: 13),
+                                  ),
+                                )
+                              : ListView.builder(
+                                  shrinkWrap: true,
+                                  itemCount: suggestions.length,
+                                  itemBuilder: (BuildContext _, int i) {
+                                    final s = suggestions[i];
+                                    return InkWell(
+                                      onTap: () {
+                                        debounce?.cancel();
+                                        Navigator.of(ctx).pop();
+                                        _changeSymbolTo(s.symbol);
+                                      },
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            vertical: 10, horizontal: 4),
+                                        child: Row(
+                                          children: <Widget>[
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: <Widget>[
+                                                  Text(s.name,
+                                                      style: const TextStyle(
+                                                          color: Colors.white,
+                                                          fontSize: 15)),
+                                                  const SizedBox(height: 2),
+                                                  Text(s.symbol.toUpperCase(),
+                                                      style: const TextStyle(
+                                                          color: Color(
+                                                              0xFF60738E),
+                                                          fontSize: 12)),
+                                                ],
+                                              ),
+                                            ),
+                                            Text(
+                                                s.market == 'sh'
+                                                    ? '沪A'
+                                                    : '深A',
+                                                style: const TextStyle(
+                                                    color: Color(0xFF4C86CD),
+                                                    fontSize: 12)),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                    ),
+                  ],
+                ),
               ),
-              focusedBorder: UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF4C86CD)),
-              ),
-            ),
-            onSubmitted: (_) {
-              Navigator.of(context).pop();
-              _changeSymbol();
-            },
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('取消',
-                  style: TextStyle(color: Color(0xFF60738E))),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.of(context).pop();
-                _changeSymbol();
-              },
-              child: const Text('确定',
-                  style: TextStyle(color: Color(0xFF4C86CD))),
-            ),
-          ],
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () {
+                    debounce?.cancel();
+                    Navigator.of(ctx).pop();
+                  },
+                  child: const Text('取消',
+                      style: TextStyle(color: Color(0xFF60738E))),
+                ),
+                TextButton(
+                  onPressed: () {
+                    debounce?.cancel();
+                    Navigator.of(ctx).pop();
+                    if (suggestions.isNotEmpty) {
+                      _changeSymbolTo(suggestions.first.symbol);
+                    } else {
+                      _changeSymbol();
+                    }
+                  },
+                  child: const Text('确定',
+                      style: TextStyle(color: Color(0xFF4C86CD))),
+                ),
+              ],
+            );
+          },
         );
       },
     );
+
+    // Clean up the debounce timer after the dialog closes.
+    debounce?.cancel();
   }
 
   // ─────────────────────────── Helpers ───────────────────────────────────
