@@ -39,7 +39,13 @@ dependencies:
   # flutter_k_chart (same API: KChartWidget / KLineEntity / DataUtil). The
   # published flutter_k_chart 0.2.0 predates null-safety and cannot resolve on
   # Flutter 3.x / Dart 3.x, so k_chart is used here as a drop-in replacement.
-  k_chart: ^0.7.1
+  #
+  # Vendored locally (packages/k_chart) so we can add an onCandleLongPress
+  # callback that reports the selected candle index — k_chart keeps its
+  # scaleX/scrollX private, so the only way to get an accurate screen→index
+  # mapping at any zoom level is to read it from inside the painter.
+  k_chart:
+    path: packages/k_chart
   http: ^1.2.2
   intl: ^0.19.0
   # Sina's realtime quote endpoint (hq.sinajs.cn) returns GB18030-encoded text
