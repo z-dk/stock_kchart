@@ -1244,17 +1244,13 @@ class _StockPageState extends State<StockPage> {
                                             Container(
                                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                               decoration: BoxDecoration(
-                                                color: s.dataSourceId == 'sina'
-                                                    ? const Color(0xFFE8783C).withValues(alpha: 0.2)
-                                                    : const Color(0xFF4DAA90).withValues(alpha: 0.2),
+                                                color: _sourceBadgeColor(s.dataSourceId).withValues(alpha: 0.2),
                                                 borderRadius: BorderRadius.circular(4),
                                               ),
                                               child: Text(
-                                                s.dataSourceId == 'sina' ? '新浪' : '东方财富',
+                                                _sourceBadgeLabel(s.dataSourceId),
                                                 style: TextStyle(
-                                                    color: s.dataSourceId == 'sina'
-                                                        ? const Color(0xFFE8783C)
-                                                        : const Color(0xFF4DAA90),
+                                                    color: _sourceBadgeColor(s.dataSourceId),
                                                     fontSize: 11),
                                               ),
                                             ),
@@ -1266,7 +1262,9 @@ class _StockPageState extends State<StockPage> {
                                                         ? '深A'
                                                         : s.market == 'hk'
                                                             ? '港股'
-                                                            : '美股',
+                                                            : s.market == 'us'
+                                                                ? '美股'
+                                                                : '加密',
                                                 style: const TextStyle(
                                                     color: Color(0xFF4C86CD),
                                                     fontSize: 12)),
@@ -1336,5 +1334,33 @@ class _StockPageState extends State<StockPage> {
     if (a >= 100000000) return '${(a / 100000000).toStringAsFixed(2)}亿';
     if (a >= 10000) return '${(a / 10000).toStringAsFixed(2)}万';
     return a.toStringAsFixed(0);
+  }
+
+  /// Badge color for a data-source id, shown in the search dropdown.
+  static Color _sourceBadgeColor(String id) {
+    switch (id) {
+      case 'sina':
+        return const Color(0xFFE8783C);
+      case 'eastmoney':
+        return const Color(0xFF4DAA90);
+      case 'binance':
+        return const Color(0xFFF0B90B);
+      default:
+        return const Color(0xFF4C86CD);
+    }
+  }
+
+  /// Badge label text for a data-source id, shown in the search dropdown.
+  static String _sourceBadgeLabel(String id) {
+    switch (id) {
+      case 'sina':
+        return '新浪';
+      case 'eastmoney':
+        return '东方财富';
+      case 'binance':
+        return '币安';
+      default:
+        return id;
+    }
   }
 }
